@@ -109,6 +109,8 @@ Tienes que usar la **app de escritorio de Discord**, no la versión web. **No co
 | `commit_on_comma` | Mandar a traducir también al llegar a una coma (si van 4 palabras o más), aunque la persona siga hablando. Más rápido, aunque con un poco menos de contexto | `true` |
 | `commit_min_seconds` | Pedazo mínimo que se manda a traducir antes de que termine de hablar | `1.5` |
 | `doubt_threshold` | Por debajo de esta seguridad, una palabra sale en naranja (de 0 a 1) | `0.35` |
+| `show_inaudible` | Mostrar *(inaudible)* cuando alguien dijo algo que no se entendió. Los ruidos cortos y el sonido cuando nadie habla en Discord se ignoran siempre | `true` |
+| `inaudible_min_seconds` | Sonidos más cortos que esto (tos, teclado, clics) no muestran *(inaudible)* | `1.2` |
 | `bubble_side` | Lado de la pantalla de las burbujas: `right` o `left` | `right` |
 | `bubble_top` | Altura donde empiezan las burbujas (0 = arriba, 1 = abajo) | `0.15` |
 | `bubble_max` / `bubble_font` | Cuántas burbujas se ven a la vez / tamaño de la letra | `4` / `14` |

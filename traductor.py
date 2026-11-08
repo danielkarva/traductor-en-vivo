@@ -65,6 +65,9 @@ DEFAULT_CONFIG = {
     "final_model": "auto",           # el más preciso, para la frase final
     "doubt_threshold": 0.35,         # palabras con menos seguridad que esto salen en naranja
     "doubt_threshold_first": 0.12,   # la 1.ª palabra de cada frase siempre sale baja en Whisper
+    # "(inaudible)": se muestra cuando alguien dijo algo que Whisper no entendió
+    "show_inaudible": True,
+    "inaudible_min_seconds": 1.2,   # sonidos más cortos (tos, teclado) se ignoran
     # "auto" = detecta el idioma de cada frase (y recuerda el de cada persona)
     "source_lang": "auto",
     # opcional: idiomas que se hablan en tu grupo, p. ej. ["en", "es", "hi", "el"];
@@ -527,6 +530,17 @@ class Engine(threading.Thread):
     def _emit_inaudible(self, who, audio):
         """Alguien dijo algo que no se entendió (Whisper solo inventó texto encima).
         Si la misma persona acaba de tener otro "inaudible", no se repite."""
+        dur = len(audio) / SR
+        if not self.cfg.get("show_inaudible", True):
+            return
+        # ruidos cortos (tos, teclado, clic) o sonido sin nadie hablando en Discord:
+        # no son algo que te perdiste, se ignoran en silencio
+        if dur < float(self.cfg.get("inaudible_min_seconds", 1.2)):
+            logging.info("inaudible ignorado: ruido corto (%.1fs)", dur)
+            return
+        if who is not None and not who:
+            logging.info("inaudible ignorado: nadie hablaba en Discord")
+            return
         key = tuple(who or [])
         now = time.time()
         if self._last_inaudible and self._last_inaudible[0] == key \
@@ -534,6 +548,7 @@ class Engine(threading.Thread):
             self._last_inaudible = (key, now)
             return
         self._last_inaudible = (key, now)
+        logging.info("inaudible mostrado (%.1fs)", dur)
         self.next_id += 1
         self.ui_q.put(("final", self.next_id, "", datetime.datetime.now(), who, [], audio,
                        {"inaudible": True}))
