@@ -63,6 +63,7 @@ El archivo [`AGENTS.md`](AGENTS.md) le explica a la IA exactamente qué hacer.
 | ◐ | Transparencia |
 | 🔊 | Volver a detectar el audio si cambias de audífonos o parlantes |
 | 🗑 | Limpiar la pantalla |
+| — | **Minimizar**: la ventana se esconde y cada traducción aparece como una **burbuja** al costado de la pantalla, con el nombre de quien habló, y se desvanece sola. Ideal para jugar: las burbujas no le quitan el foco al juego y los clics pasan a través. Para volver, haz clic en **💬 Traductor** |
 | ▶ / 🐢 | Al lado de cada frase: volver a escucharla, normal o más lenta |
 
 ---
@@ -98,6 +99,11 @@ Tienes que usar la **app de escritorio de Discord**, no la versión web. **No co
 | `silence_end` | Segundos de silencio que cierran una frase | `0.9` |
 | `max_segment` | Duración máxima de una frase antes de mandarla a traducir | `8` |
 | `doubt_threshold` | Por debajo de esta seguridad, una palabra sale en naranja (de 0 a 1) | `0.35` |
+| `bubble_side` | Lado de la pantalla de las burbujas: `right` o `left` | `right` |
+| `bubble_top` | Altura donde empiezan las burbujas (0 = arriba, 1 = abajo) | `0.15` |
+| `bubble_max` / `bubble_font` | Cuántas burbujas se ven a la vez / tamaño de la letra | `4` / `14` |
+
+> Las burbujas aparecen encima de juegos en **ventana sin bordes** (*borderless*). En **pantalla completa exclusiva** Windows no deja mostrar nada encima: cambia el juego a "ventana sin bordes".
 
 Después de cambiar algo, cierra el traductor con ✕ y vuelve a abrirlo.
 

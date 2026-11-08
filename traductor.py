@@ -71,6 +71,11 @@ DEFAULT_CONFIG = {
     "glossary": [],
     "max_segment": 8.0,      # una frase nunca pasa de esto
     "min_threshold": 0.004,  # volumen mínimo para considerar que alguien habla
+    # burbujas (ventana minimizada)
+    "bubble_side": "right",  # "right" o "left"
+    "bubble_top": 0.15,      # dónde empieza la columna (fracción del alto de pantalla)
+    "bubble_max": 4,         # cuántas a la vez
+    "bubble_font": 14,
 }
 
 SR = 16000
@@ -567,6 +572,9 @@ class Overlay:
         self.partial_en = None
         self.partial_es = None
         self.partial_who = None
+        self.mini = False          # minimizado: las traducciones salen como burbujas
+        self.pill = None
+        self.bubbles = []
         self.discord = ""
         self.device = "…"
         self.status = "Iniciando…"
@@ -620,6 +628,8 @@ class Overlay:
             w.bind("<B1-Motion>", self._drag_move)
 
         self._btn(bar, "✕", self.close, "Cerrar")
+        self._btn(bar, "—", self.minimize,
+                  "Minimizar: las traducciones salen como burbujas al costado de la pantalla")
         self._btn(bar, "🗑", self.clear, "Limpiar la pantalla")
         self._btn(bar, "🔊", self.redetect, "Volver a detectar el audio (si cambiaste de audífonos)")
         self._btn(bar, "◐", self.cycle_opacity, "Transparencia")
@@ -730,6 +740,8 @@ class Overlay:
             self.text.delete("1.0", "end")     # quita el mensaje de "Escuchando…"
         self.entries.append(e)
         self._insert_entry(e)
+        if self.mini:
+            self._bubble(e)
         if len(self.entries) > 300:            # recorta lo muy viejo
             self.entries = self.entries[-200:]
             self._render()
@@ -887,11 +899,148 @@ class Overlay:
     def _keep_on_top(self):
         # Discord a veces se pone encima; esto lo devuelve arriba
         try:
-            self.root.attributes("-topmost", True)
-            self.root.lift()
+            if self.mini:
+                for w in [self.pill] + [b["win"] for b in self.bubbles]:
+                    if w is not None and w.winfo_exists():
+                        w.attributes("-topmost", True)
+                        w.lift()
+            else:
+                self.root.attributes("-topmost", True)
+                self.root.lift()
         except Exception:
             pass
         self.root.after(3000, self._keep_on_top)
+
+    # ---------------------------------------------------------------- burbujas
+    @staticmethod
+    def _win_style(win, click_through):
+        """Ventana que NO le roba el foco al juego y no sale en Alt+Tab;
+        con click_through los clics pasan a través de ella."""
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            hwnd = u.GetParent(win.winfo_id())
+            st = u.GetWindowLongW(hwnd, -20)                   # GWL_EXSTYLE
+            st |= 0x08000000 | 0x80 | 0x80000                  # NOACTIVATE|TOOLWINDOW|LAYERED
+            if click_through:
+                st |= 0x20                                     # TRANSPARENT
+            u.SetWindowLongW(hwnd, -20, st)
+        except Exception:
+            logging.exception("estilo de ventana")
+
+    def minimize(self):
+        if self.mini:
+            return
+        self.mini = True
+        self.root.withdraw()
+        sw = self.root.winfo_screenwidth()
+        p = tk.Toplevel(self.root)
+        p.overrideredirect(True)
+        p.attributes("-topmost", True)
+        p.configure(bg=ACC)
+        lbl = tk.Label(p, text="💬 Traductor", bg="#111418", fg=FG, cursor="hand2",
+                       font=("Segoe UI Semibold", 9), padx=10, pady=4)
+        lbl.pack(padx=1, pady=1)
+        lbl.bind("<Button-1>", lambda e: self.restore())
+        lbl.bind("<Enter>", lambda e: lbl.config(text="⤢ Abrir ventana"))
+        lbl.bind("<Leave>", lambda e: lbl.config(text="💬 Traductor"))
+        p.update_idletasks()
+        # justo encima de la columna de burbujas (no en la esquina: ahí están los
+        # botones de minimizar/cerrar de las ventanas maximizadas)
+        sh = self.root.winfo_screenheight()
+        x = sw - p.winfo_reqwidth() - 16 if self.cfg["bubble_side"] == "right" else 16
+        y = max(40, int(sh * float(self.cfg.get("bubble_top", 0.15))) - p.winfo_reqheight() - 10)
+        p.geometry(f"+{x}+{y}")
+        self._win_style(p, click_through=False)
+        p.attributes("-alpha", 0.85)
+        self.pill = p
+
+    def restore(self):
+        if not self.mini:
+            return
+        self.mini = False
+        for b in self.bubbles:
+            try:
+                b["win"].destroy()
+            except Exception:
+                pass
+        self.bubbles = []
+        if self.pill is not None:
+            self.pill.destroy()
+            self.pill = None
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
+        self._go_bottom()
+
+    def _bubble(self, e):
+        if not e.get("es"):
+            return
+        fs = int(self.cfg.get("bubble_font", 14))
+        names = e.get("who") or []
+        color = color_for(names[0]) if names else DIM
+        b = tk.Toplevel(self.root)
+        b.overrideredirect(True)
+        b.attributes("-topmost", True)
+        b.attributes("-alpha", 0.0)
+        b.configure(bg=color)                       # franja de color a la izquierda
+        inner = tk.Frame(b, bg="#111418", padx=12, pady=7)
+        inner.pack(padx=(5, 0), pady=0, fill="both")
+        if names:
+            head = tk.Frame(inner, bg="#111418")
+            head.pack(anchor="w")
+            for i, n in enumerate(names):
+                if i:
+                    tk.Label(head, text=" + ", bg="#111418", fg=DIM,
+                             font=("Segoe UI", fs - 4)).pack(side="left")
+                tk.Label(head, text=n, bg="#111418", fg=color_for(n),
+                         font=("Segoe UI Semibold", fs - 3)).pack(side="left")
+        tk.Label(inner, text=e["es"], bg="#111418", fg=FG, justify="left",
+                 wraplength=int(fs * 26), font=("Segoe UI", fs)).pack(anchor="w")
+        b.update_idletasks()
+        self._win_style(b, click_through=True)
+        # tiempo en pantalla: 4 s + lo que tome leerla, máximo 12 s
+        secs = min(12.0, 4.0 + len(e["es"]) * 0.05)
+        item = {"win": b, "h": b.winfo_reqheight(), "w": b.winfo_reqwidth(), "alpha": 0.0}
+        self.bubbles.append(item)
+        while len(self.bubbles) > int(self.cfg.get("bubble_max", 4)):
+            old = self.bubbles.pop(0)
+            try:
+                old["win"].destroy()
+            except Exception:
+                pass
+        self._layout_bubbles()
+        self._fade(item, 0.93, 0.12)
+        b.after(int(secs * 1000), lambda: self._fade(item, 0.0, -0.08, kill=True))
+
+    def _layout_bubbles(self):
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        y = int(sh * float(self.cfg.get("bubble_top", 0.15)))
+        for it in self.bubbles:
+            x = sw - it["w"] - 16 if self.cfg["bubble_side"] == "right" else 16
+            try:
+                it["win"].geometry(f"+{x}+{y}")
+            except Exception:
+                pass
+            y += it["h"] + 8
+
+    def _fade(self, item, target, step, kill=False):
+        w = item["win"]
+        try:
+            if not w.winfo_exists():
+                return
+        except Exception:
+            return
+        a = item["alpha"] + step
+        done = (step > 0 and a >= target) or (step < 0 and a <= target)
+        item["alpha"] = target if done else a
+        w.attributes("-alpha", item["alpha"])
+        if not done:
+            w.after(30, lambda: self._fade(item, target, step, kill))
+        elif kill:
+            if item in self.bubbles:
+                self.bubbles.remove(item)
+            w.destroy()
+            self._layout_bubbles()
 
     # ---------------------------------------------------------------- actions
     def _drag_start(self, e):
