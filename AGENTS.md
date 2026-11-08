@@ -61,5 +61,6 @@ Treat the secret as a secret: do not print it back in full, do not commit it.
 | `traductor.py` | Everything: audio capture, segmentation, Whisper, translation, Tk window |
 | `discord_speakers.py` | Discord local RPC (named pipe `discord-ipc-N`), OAuth, who-spoke-when, per-word attribution, lag auto-calibration |
 | `config.example.json` | Template for `config.json` (all keys and defaults are in `DEFAULT_CONFIG` in `traductor.py`) |
-| `instalar.bat` / `Traductor.bat` | Installer / launcher |
+| `instalar.bat` / `Traductor.bat` | Installer (desktop + Start menu shortcuts with `icono.ico`) / launcher |
+| `icono.ico`, `icono.png`, `herramientas/hacer_icono.py` | App icon (taskbar, tray, shortcuts) and the script that draws it |
 | `requirements*.txt` | Dependencies (NVIDIA ones separate) |

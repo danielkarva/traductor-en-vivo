@@ -52,6 +52,7 @@ from discord_speakers import DiscordSpeakers, color_for
 
 CONFIG_PATH = os.path.join(BASE, "config.json")
 MODELS_DIR = os.path.join(BASE, "modelos")
+ICON_PATH = os.path.join(BASE, "icono.ico")
 
 DEFAULT_CONFIG = {
     "geometry": "620x420+60+60",
@@ -608,8 +609,19 @@ class Overlay:
         self.ready = False
 
 
+        # identidad propia en Windows: la barra de tareas usa NUESTRO icono, no el de Python
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TraductorEnVivo.App")
+        except Exception:
+            pass
         self.root = tk.Tk()
         self.root.title("Traductor en vivo")
+        if os.path.exists(ICON_PATH):
+            try:
+                self.root.iconbitmap(default=ICON_PATH)
+            except Exception:
+                logging.exception("icono")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", cfg["opacity"])
@@ -633,6 +645,66 @@ class Overlay:
 
         self.root.after(50, self._poll)
         self.root.after(1500, self._keep_on_top)
+        self.root.after(400, self._show_in_taskbar)
+        self.tray = None
+        self._start_tray()
+
+    # ---------------------------------------------------------------- Windows
+    def _show_in_taskbar(self, tries=10):
+        """Una ventana sin marco (overrideredirect) no sale en la barra de tareas:
+        se le pone el estilo APPWINDOW para que tenga su botón con el icono.
+        Hay que hacerlo cuando Windows ya creó la ventana: si aún no, reintenta."""
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            if self.mini or not self.root.winfo_viewable():
+                if tries > 0 and not self.mini:
+                    self.root.after(300, lambda: self._show_in_taskbar(tries - 1))
+                return
+            hwnd = u.GetParent(self.root.winfo_id())
+            if not hwnd or u.GetWindowLongW(hwnd, -20) & 0x40000:
+                if not hwnd and tries > 0:
+                    self.root.after(300, lambda: self._show_in_taskbar(tries - 1))
+                return
+            st = u.GetWindowLongW(hwnd, -20)
+            st = (st & ~0x80) | 0x40000          # sin TOOLWINDOW, con APPWINDOW
+            u.SetWindowLongW(hwnd, -20, st)
+            # esconder/mostrar con la API de Windows (NO con withdraw/deiconify de Tk,
+            # que recalcula los estilos y vuelve a quitar el botón)
+            u.ShowWindow(hwnd, 0)
+            u.ShowWindow(hwnd, 5)
+        except Exception:
+            logging.exception("barra de tareas")
+
+    def _start_tray(self):
+        """Icono junto al reloj (como el del micrófono): clic = mostrar;
+        clic derecho = menú."""
+        try:
+            import pystray
+            from PIL import Image
+            img = Image.open(ICON_PATH) if os.path.exists(ICON_PATH) else \
+                Image.new("RGB", (64, 64), ACC)
+            run = lambda fn: (lambda icon, item: self.ui_q.put(("cmd", fn)))
+            menu = pystray.Menu(
+                pystray.MenuItem("Mostrar ventana", run(self.show_window), default=True),
+                pystray.MenuItem("Modo burbujas", run(self.minimize)),
+                pystray.MenuItem("Pausar / reanudar", run(self.toggle_pause)),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Salir", run(self.close)))
+            self.tray = pystray.Icon("TraductorEnVivo", img, "Traductor en vivo", menu)
+            self.tray.run_detached()
+        except Exception:
+            logging.exception("icono de la bandeja")
+
+    def show_window(self):
+        if self.mini:
+            self.restore()
+        else:
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+            self.root.focus_force()
+            self.root.after(20, self._show_in_taskbar)
 
     # ---------------------------------------------------------------- layout
     def _btn(self, parent, text, cmd, tip):
@@ -886,6 +958,8 @@ class Overlay:
                     self.device = msg[1]
                 elif kind == "discord":
                     self.discord = msg[1]
+                elif kind == "cmd":            # pedido desde el icono de la bandeja
+                    msg[1]()
                 elif kind == "ready":
                     self.ready = True
                     changed = True
@@ -997,6 +1071,7 @@ class Overlay:
             self.pill = None
         self.root.deiconify()
         self.root.attributes("-topmost", True)
+        self.root.after(20, self._show_in_taskbar)    # Tk le quitó el botón al mostrarla
         self._go_bottom()
 
     def _bubble(self, e):
@@ -1150,9 +1225,15 @@ class Overlay:
         self.capture.request_restart()
 
     def close(self):
-        self.cfg["geometry"] = self.root.geometry()
+        if not self.mini:
+            self.cfg["geometry"] = self.root.geometry()
         save_config(self.cfg)
         self.capture.stop_flag = True
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         self.root.destroy()
 
     def run(self):

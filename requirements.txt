@@ -5,3 +5,5 @@ numpy
 soxr                 # convertidor de audio de calidad
 requests
 truststore           # usa los certificados de Windows (antivirus que interceptan HTTPS)
+pillow               # icono
+pystray              # icono junto al reloj (bandeja del sistema)

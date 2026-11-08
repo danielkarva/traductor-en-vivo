@@ -51,6 +51,11 @@ El archivo [`AGENTS.md`](AGENTS.md) le explica a la IA exactamente qué hacer.
 
 ## Cómo se usa
 
+- **Para abrirlo:** usa el acceso directo **"Traductor en vivo"** del escritorio, o búscalo en el menú Inicio. Si quieres tenerlo siempre a mano, haz clic derecho en su botón de la barra de tareas y elige **Anclar a la barra de tareas**.
+- **Mientras está abierto** tiene su **botón en la barra de tareas** y un **ícono junto al reloj**, al lado del micrófono y el volumen:
+  - **Clic** en el ícono: muestra la ventana.
+  - **Clic derecho**: un menú con *Mostrar ventana*, *Modo burbujas*, *Pausar* y *Salir*.
+  - Si no ves el ícono, está escondido detrás de la flecha **^**. Arrástralo afuera para que quede siempre visible.
 - La ventana se mueve arrastrando la barra de arriba y se agranda con el **◢** de la esquina.
 - **Arriba** queda el historial de la conversación. **Abajo**, en la franja oscura, ves lo que alguien está diciendo en ese momento.
 - Si subes con la rueda del ratón para releer, el texto deja de bajar solo. Para volver al final, haz clic en **⬇ nuevas**.

@@ -63,8 +63,8 @@ if errorlevel 1 (
 rem ---- 5. Configuracion y acceso directo -------------------------------------------
 if not exist "config.json" copy /y "config.example.json" "config.json" >nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"$d\Traductor en vivo.lnk\"); $s.TargetPath='%CD%\.venv\Scripts\pythonw.exe'; $s.Arguments='\"%CD%\traductor.py\"'; $s.WorkingDirectory='%CD%'; $s.IconLocation='C:\Windows\System32\imageres.dll,190'; $s.Save()"
-echo  [5/5] Acceso directo "Traductor en vivo" creado en el escritorio.
+  "$w=New-Object -ComObject WScript.Shell; foreach($f in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))){ $s=$w.CreateShortcut(\"$f\Traductor en vivo.lnk\"); $s.TargetPath='%CD%\.venv\Scripts\pythonw.exe'; $s.Arguments='\"%CD%\traductor.py\"'; $s.WorkingDirectory='%CD%'; $s.IconLocation='%CD%\icono.ico,0'; $s.Description='Traductor en vivo para llamadas'; $s.Save() }"
+echo  [5/5] Accesos directos creados: escritorio y menu Inicio.
 echo.
 echo  Listo. Abre "Traductor en vivo" desde el escritorio.
 echo  La primera vez descarga el modelo de Whisper (1,5 a 4,5 GB): ten paciencia.
