@@ -1,0 +1,12 @@
+{
+  "source_lang": "en",
+  "target_lang": "es",
+  "model": "auto",
+  "final_model": "auto",
+  "font_size": 15,
+  "opacity": 0.9,
+  "show_en": true,
+  "glossary": ["Discord", "YouTube", "TikTok", "Instagram"],
+  "discord_client_id": "",
+  "discord_client_secret": ""
+}

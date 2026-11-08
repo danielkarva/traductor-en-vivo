@@ -1,0 +1,12 @@
+# Configuración y credenciales personales — NUNCA subir
+config.json
+discord_token.json
+ca-bundle.pem
+
+# Entorno, modelos (GB) y registros
+.venv/
+modelos/
+__pycache__/
+*.pyc
+*.log
+*.log.*

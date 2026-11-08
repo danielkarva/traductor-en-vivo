@@ -1,0 +1,4 @@
+# Solo para PCs con tarjeta NVIDIA: librerías de CUDA para que Whisper use la GPU.
+# instalar.bat las instala solo si encuentra nvidia-smi. Pesan ~2 GB.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

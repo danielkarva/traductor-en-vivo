@@ -1,0 +1,7 @@
+faster-whisper>=1.2
+onnxruntime          # lo usa faster-whisper para detectar dónde hay voz (NO quitar)
+pyaudiowpatch        # captura lo que suena en el PC (Windows)
+numpy
+soxr                 # convertidor de audio de calidad
+requests
+truststore           # usa los certificados de Windows (antivirus que interceptan HTTPS)
