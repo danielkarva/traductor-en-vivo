@@ -102,27 +102,57 @@ HALLU_RE = re.compile(
     r"|subtitles? (?:by|made|created)|captions? (?:by|made)"
     r"|transcri(?:bed|ption) by|translat(?:ed|ion) by"
     r"|thanks? (?:you )?(?:so much |very much )?for watching"
-    r"|please subscribe|(?:like|don'?t forget to)(?: and)? subscribe",
+    r"|please subscribe|(?:like|don'?t forget to)(?: and)? subscribe"
+    # llamados típicos de descripciones de YouTube / redes
+    r"|follow (?:me|us) on|s[ií]gue(?:me|nos) en"
+    r"|turn on (?:the |your |post )?notifications?|activa (?:la |las )?notificaci"
+    r"|hit (?:the|that) (?:bell|like)|ring the bell|dale (?:like|a la campan)"
+    r"|link in (?:the )?(?:description|bio)|enlace en la descripci"
+    r"|see you (?:guys )?in the next (?:video|one)|nos vemos en el pr[oó]ximo video"
+    r"|(?:my|our) (?:instagram|twitter|tiktok|facebook|patreon|channel) (?:is|for)"
+    r"|www\.|https?://",
     re.IGNORECASE)
+
+# Una persona hablando nunca "dice" un emoji ni símbolos como ✔ 🔔 ♪: si Whisper los
+# escribe, está copiando texto de internet. Esas oraciones se descartan.
+EMOJI_RE = re.compile(
+    "[←-⇿⌀-⏿①-➿⤀-⥿⬀-⯿"
+    "\U0001F000-\U0001FAFF️]")
+
+
+def is_hallucinated(sentence):
+    return bool(HALLU_RE.search(sentence) or EMOJI_RE.search(sentence))
 
 
 def clean_hallucinated_words(words):
-    """words = [(palabra, ...)] → sin las oraciones que son créditos inventados."""
-    out, cur = [], []
+    """words = [(palabra, ...)] → sin las oraciones que son texto inventado.
+    Si se quitó algo y lo que sobra son 1-2 palabras sueltas (p. ej. el "Thanks!"
+    del final del mismo texto inventado), se descarta todo."""
+    out, cur, removed = [], [], False
     for w in words:
         cur.append(w)
         if w[0].strip().endswith((".", "?", "!")):
-            if not HALLU_RE.search("".join(x[0] for x in cur)):
+            if is_hallucinated("".join(x[0] for x in cur)):
+                removed = True
+            else:
                 out += cur
             cur = []
-    if cur and not HALLU_RE.search("".join(x[0] for x in cur)):
-        out += cur
+    if cur:
+        if is_hallucinated("".join(x[0] for x in cur)):
+            removed = True
+        else:
+            out += cur
+    if removed and len(out) <= 2:
+        return []
     return out
 
 
 def clean_hallucinated_text(text):
     parts = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(p for p in parts if not HALLU_RE.search(p)).strip()
+    keep = [p for p in parts if not is_hallucinated(p)]
+    if len(keep) < len(parts) and len(" ".join(keep).split()) <= 2:
+        return ""
+    return " ".join(keep).strip()
 
 
 def gpu_info():
@@ -266,6 +296,8 @@ class Engine(threading.Thread):
         self.final_model = None
         self.partial_every = float(cfg.get("partial_every", 0.6))
         self.recent_finals = []
+        self.last_removed = False
+        self._last_inaudible = None
         self.next_id = 0
         self.context = ""
 
@@ -326,6 +358,9 @@ class Engine(threading.Thread):
             hotwords=self._hotwords(),
             word_timestamps=want_words,
             without_timestamps=not want_words,
+            # ignora lo "oído" en pausas largas sin voz (donde Whisper más inventa);
+            # solo funciona con tiempos por palabra
+            hallucination_silence_threshold=1.0 if want_words else None,
         )
         parts, words = [], []
         for s in segs:
@@ -338,12 +373,18 @@ class Engine(threading.Thread):
         text = " ".join(p for p in parts if p).strip()
         # quitar las "alucinaciones" de Whisper (créditos de subtítulos, etc.)
         # aunque vengan con variantes o pegadas a una frase real
+        # self.last_removed = True si se quitó algo inventado (para mostrar "inaudible")
         if words:
+            n0 = len(words)
             words = clean_hallucinated_words(words)
             text = "".join(w[0] for w in words).strip()
+            self.last_removed = len(words) < n0
         else:
-            text = clean_hallucinated_text(text)
+            clean = clean_hallucinated_text(text)
+            self.last_removed = clean != text
+            text = clean
         if text.lower().strip(" .!?") in {h.strip(" .!?") for h in HALLUCINATIONS}:
+            self.last_removed = True
             return "", []
         return text, words
 
@@ -387,10 +428,14 @@ class Engine(threading.Thread):
             return
         who = self._who(times)
         t0 = time.time()
+        self.last_removed = False
         text, words = self._transcribe(audio, final=True)
+        removed = self.last_removed
         logging.info("final %.1fs audio en %.2fs", len(audio) / SR, time.time() - t0)
         self.ui_q.put(("partial", None, None))
         if not text:
+            if removed:                       # Whisper inventó algo: "inaudible"
+                self._emit_inaudible(who, audio)
             return
         # Whisper inventa frases sobre ruido/música: seguridad promedio bajísima,
         # o la misma frase repetida con poca seguridad
@@ -399,6 +444,7 @@ class Engine(threading.Thread):
             norm = text.lower().strip(" .!?,")
             if mean < 0.3 or (mean < 0.5 and norm in self.recent_finals):
                 logging.info("descartada (seguridad %.2f)", mean)
+                self._emit_inaudible(who, audio)
                 return
             self.recent_finals = (self.recent_finals + [norm])[-4:]
         self.context = (self.context + " " + text)[-400:]
@@ -406,23 +452,40 @@ class Engine(threading.Thread):
         # quién dijo cada palabra (Discord): si hablaron varios, una línea por persona
         runs = self.speakers.attribute(times[0], words) if (self.speakers and words) else None
         if not runs:
-            self._emit_entry(text, who, words, audio)
+            self._emit_entry(text, who, words, audio, tail=removed)
             return
         logging.info("frase repartida en %d tramo(s)", len(runs))
-        for names, i0, i1 in runs:
+        for k, (names, i0, i1) in enumerate(runs):
             ws = words[i0:i1]
             run_text = "".join(w[0] for w in ws).strip()
             if not run_text:
                 continue
             a0 = max(0, int((ws[0][2] - 0.15) * SR))
             a1 = min(len(audio), int((ws[-1][3] + 0.25) * SR))
-            self._emit_entry(run_text, names, ws, audio[a0:a1] if len(runs) > 1 else audio)
+            self._emit_entry(run_text, names, ws, audio[a0:a1] if len(runs) > 1 else audio,
+                             tail=removed and k == len(runs) - 1)
 
-    def _emit_entry(self, text, who, words, audio):
+    def _emit_entry(self, text, who, words, audio, tail=False):
+        """tail=True: a la frase se le quitó un pedazo inventado → "(inaudible)" al final."""
         self.next_id += 1
         self.ui_q.put(("final", self.next_id, text, datetime.datetime.now(), who,
-                       [(w[0], w[1]) for w in words], audio))
+                       [(w[0], w[1]) for w in words], audio, {"tail": tail}))
         self.translator.add_final(self.next_id, text, who)
+
+    def _emit_inaudible(self, who, audio):
+        """Alguien dijo algo que no se entendió (Whisper solo inventó texto encima).
+        Si la misma persona acaba de tener otro "inaudible", no se repite."""
+        key = tuple(who or [])
+        now = time.time()
+        if self._last_inaudible and self._last_inaudible[0] == key \
+                and now - self._last_inaudible[1] < 8:
+            self._last_inaudible = (key, now)
+            return
+        self._last_inaudible = (key, now)
+        self.next_id += 1
+        self.ui_q.put(("final", self.next_id, "", datetime.datetime.now(), who, [], audio,
+                       {"inaudible": True}))
+        self.ui_q.put(("translation", self.next_id, "(inaudible)", True))
 
     def run(self):
         try:
@@ -828,6 +891,10 @@ class Overlay:
         t.tag_configure("pending", font=("Segoe UI", fs, "italic"), foreground="#56606e",
                                 spacing3=12)
         t.tag_configure("hint", font=("Segoe UI", max(9, fs - 3)), foreground=DIM)
+        t.tag_configure("inaudible", font=("Segoe UI", fs, "italic"), foreground="#6f7d90",
+                        spacing3=12)
+        t.tag_configure("inaudible_tail", font=("Segoe UI", max(9, fs - 3), "italic"),
+                        foreground="#6f7d90")
         t.tag_configure("who_unknown", font=("Segoe UI Semibold", max(9, fs - 3)),
                                 foreground="#5c6676", spacing1=6)
 
@@ -890,7 +957,8 @@ class Overlay:
         show_en = self.cfg["show_en"]
         words = e.get("words") or []
         flags = self._doubt_flags(words)
-        en_line = show_en or any(flags)
+        inaudible = e.get("flags", {}).get("inaudible")
+        en_line = (show_en or any(flags)) and not inaudible
         if e.get("who") is not None:
             self._insert_who(t, e["who"])
         t.insert("end", e["t"].strftime("%H:%M:%S") + "  ", "time")
@@ -914,7 +982,13 @@ class Overlay:
                 t.insert("end", "\n", "en")
             else:
                 t.insert("end", e["en"] + "\n", "en")
-        t.insert("end", (e["es"] or "(sin traducción)") + "\n", "es")
+        if inaudible:
+            t.insert("end", "(inaudible)\n", "inaudible")
+            return
+        t.insert("end", e["es"] or "(sin traducción)", "es")
+        if e.get("flags", {}).get("tail"):
+            t.insert("end", "  (inaudible)", "inaudible_tail")
+        t.insert("end", "\n", "es")
 
     def _render_live(self):
         """Franja de abajo: lo que alguien está diciendo en este momento."""
@@ -1015,7 +1089,8 @@ class Overlay:
                 elif kind == "final":
                     self.pending[msg[1]] = {"id": msg[1], "en": msg[2], "es": None,
                                             "t": msg[3], "who": msg[4], "words": msg[5],
-                                            "arrived": time.time()}
+                                            "arrived": time.time(),
+                                            "flags": msg[7] if len(msg) > 7 else {}}
                     self.audio[msg[1]] = msg[6]
                     for old in list(self.audio)[:-100]:
                         self.audio.pop(old, None)
@@ -1134,8 +1209,14 @@ class Overlay:
                              font=("Segoe UI", fs - 4)).pack(side="left")
                 tk.Label(head, text=n, bg="#111418", fg=color_for(n),
                          font=("Segoe UI Semibold", fs - 3)).pack(side="left")
-        tk.Label(inner, text=e["es"], bg="#111418", fg=FG, justify="left",
-                 wraplength=int(fs * 26), font=("Segoe UI", fs)).pack(anchor="w")
+        flags = e.get("flags", {})
+        if flags.get("inaudible"):
+            tk.Label(inner, text="(inaudible)", bg="#111418", fg="#8b95a5", justify="left",
+                     font=("Segoe UI", fs, "italic")).pack(anchor="w")
+        else:
+            tk.Label(inner, text=e["es"] + ("  (inaudible)" if flags.get("tail") else ""),
+                     bg="#111418", fg=FG, justify="left",
+                     wraplength=int(fs * 26), font=("Segoe UI", fs)).pack(anchor="w")
         b.update_idletasks()
         self._win_style(b, click_through=True)
         # tiempo en pantalla: 4 s + lo que tome leerla, máximo 12 s
