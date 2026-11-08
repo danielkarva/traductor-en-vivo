@@ -6,7 +6,7 @@ traducido en una ventana flotante encima de todo.
 Configuración: config.json (se crea a partir de config.example.json).
 Instrucciones: README.md (personas) y AGENTS.md (asistentes de IA).
 """
-import os, sys, json, time, queue, threading, datetime, glob, logging, traceback
+import os, sys, re, json, time, queue, threading, datetime, glob, logging, traceback
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(BASE, "traductor.log")
@@ -92,6 +92,37 @@ HALLUCINATIONS = {
     "subtitles by the amara.org community", "please subscribe",
     "like and subscribe", "you", "...", "♪", "bye.",
 }
+
+# Whisper aprendió con videos subtitulados de internet y, sobre silencio, ruido o
+# música, a veces "rellena" con los créditos que vio miles de veces. Cualquier oración
+# que contenga esto se descarta (no se descarta la frase entera, solo esa oración).
+HALLU_RE = re.compile(
+    r"amara\.org"
+    r"|subt[ií]tulos? (?:de|por|realizados|hechos)"
+    r"|subtitles? (?:by|made|created)|captions? (?:by|made)"
+    r"|transcri(?:bed|ption) by|translat(?:ed|ion) by"
+    r"|thanks? (?:you )?(?:so much |very much )?for watching"
+    r"|please subscribe|(?:like|don'?t forget to)(?: and)? subscribe",
+    re.IGNORECASE)
+
+
+def clean_hallucinated_words(words):
+    """words = [(palabra, ...)] → sin las oraciones que son créditos inventados."""
+    out, cur = [], []
+    for w in words:
+        cur.append(w)
+        if w[0].strip().endswith((".", "?", "!")):
+            if not HALLU_RE.search("".join(x[0] for x in cur)):
+                out += cur
+            cur = []
+    if cur and not HALLU_RE.search("".join(x[0] for x in cur)):
+        out += cur
+    return out
+
+
+def clean_hallucinated_text(text):
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    return " ".join(p for p in parts if not HALLU_RE.search(p)).strip()
 
 
 def gpu_info():
@@ -305,6 +336,13 @@ class Engine(threading.Thread):
                 # (palabra, seguridad, inicio_s, fin_s) — tiempos relativos al audio
                 words.append((w.word, float(w.probability), float(w.start), float(w.end)))
         text = " ".join(p for p in parts if p).strip()
+        # quitar las "alucinaciones" de Whisper (créditos de subtítulos, etc.)
+        # aunque vengan con variantes o pegadas a una frase real
+        if words:
+            words = clean_hallucinated_words(words)
+            text = "".join(w[0] for w in words).strip()
+        else:
+            text = clean_hallucinated_text(text)
         if text.lower().strip(" .!?") in {h.strip(" .!?") for h in HALLUCINATIONS}:
             return "", []
         return text, words
