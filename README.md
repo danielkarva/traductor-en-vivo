@@ -4,6 +4,7 @@ Una ventana flotante que **escucha lo que suena en tu PC** (una llamada de Disco
 
 Pensado para quien está en llamadas en inglés y le cuesta seguirlas.
 
+- **Varios idiomas a la vez**: detecta el idioma de cada frase (inglés, hindi, griego… unos 100) y lo traduce todo a tu idioma. Cada frase lleva su etiqueta (`EN`, `HI`, `EL`), y lo que ya está en tu idioma se muestra sin traducir.
 - Muestra **quién está hablando** en tu canal de voz de Discord, cada persona con su color.
 - Cada oración aparece traducida apenas termina, aunque la persona siga hablando.
 - Marca en naranja las palabras que Whisper no entendió bien.
@@ -98,7 +99,9 @@ Tienes que usar la **app de escritorio de Discord**, no la versión web. **No co
 
 | Clave | Qué hace | Por defecto |
 |---|---|---|
-| `source_lang` / `target_lang` | Idioma que se escucha / idioma al que se traduce (códigos: `en`, `es`, `pt`, `fr`, `de`…) | `en` → `es` |
+| `source_lang` | Idioma que se escucha. `auto` detecta el de **cada frase** y recuerda el de cada persona, así puedes estar con gente que habla inglés, hindi y griego a la vez. También puedes fijar uno (`en`, `fr`…) | `auto` |
+| `target_lang` | Tu idioma: todo se traduce a este. Lo que ya esté en tu idioma se muestra tal cual, sin traducir | `es` |
+| `expected_languages` | Opcional: los idiomas que se hablan en tu grupo, por ejemplo `["en", "es", "hi", "el"]`. En frases muy cortas Whisper a veces se confunde de idioma; con la lista solo elige entre esos | `[]` |
 | `model` / `final_model` | Modelo de Whisper. `auto` lo elige según tu PC | `auto` |
 | `glossary` | Palabras que Whisper debe reconocer bien: nombres, juegos, herramientas | `[]` |
 | `silence_end` | Segundos de silencio que cierran una frase | `0.6` |

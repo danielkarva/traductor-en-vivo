@@ -65,7 +65,11 @@ DEFAULT_CONFIG = {
     "final_model": "auto",           # el más preciso, para la frase final
     "doubt_threshold": 0.35,         # palabras con menos seguridad que esto salen en naranja
     "doubt_threshold_first": 0.12,   # la 1.ª palabra de cada frase siempre sale baja en Whisper
-    "source_lang": "en",
+    # "auto" = detecta el idioma de cada frase (y recuerda el de cada persona)
+    "source_lang": "auto",
+    # opcional: idiomas que se hablan en tu grupo, p. ej. ["en", "es", "hi", "el"];
+    # con la lista, Whisper solo elige entre esos y se equivoca mucho menos
+    "expected_languages": [],
     "target_lang": "es",
     "silence_end": 0.6,      # segundos de silencio que cierran una frase
     # mandar a traducir antes de que la persona termine de hablar:
@@ -153,6 +157,14 @@ def clean_hallucinated_text(text):
     if len(keep) < len(parts) and len(" ".join(keep).split()) <= 2:
         return ""
     return " ".join(keep).strip()
+
+
+# códigos de Whisper que Google escribe distinto
+GOOGLE_LANG = {"zh": "zh-CN", "he": "iw", "jw": "jv", "yue": "zh-TW"}
+
+
+def same_lang(a, b):
+    return bool(a and b) and a.split("-")[0].lower() == b.split("-")[0].lower()
 
 
 def gpu_info():
@@ -299,7 +311,9 @@ class Engine(threading.Thread):
         self.last_removed = False
         self._last_inaudible = None
         self.next_id = 0
-        self.context = ""
+        self.context = {}            # idioma -> lo último que se dijo (contexto)
+        self.lang_by_who = {}        # persona -> último idioma que habló
+        self.last_lang = None        # idioma que Whisper detectó en la última llamada
 
     def _load_model(self):
         from faster_whisper import WhisperModel
@@ -315,7 +329,7 @@ class Engine(threading.Thread):
             self.model = WhisperModel(live, **kw)
             # calentamiento: la primera inferencia carga los kernels
             list(self.model.transcribe(np.zeros(SR, dtype=np.float32),
-                                       language=self.cfg["source_lang"])[0])
+                                       language=self._fixed_lang() or "en")[0])
         except Exception:
             if device != "cuda":
                 raise
@@ -343,18 +357,53 @@ class Engine(threading.Thread):
                 words += list(self.speakers.names.values())
         return ", ".join(dict.fromkeys(w for w in words if w)) or None
 
-    def _transcribe(self, audio, final, words=None):
+    def _fixed_lang(self):
+        src = self.cfg.get("source_lang", "auto")
+        return None if src in (None, "", "auto") else src
+
+    def _pick_lang(self, audio, who):
+        """Idioma de una frase final: el que detecta Whisper, restringido a los idiomas
+        esperados (si se configuraron) y, si duda, el último que habló esa persona."""
+        fixed = self._fixed_lang()
+        if fixed:
+            return fixed
+        key = tuple(who or [])
+        prev = self.lang_by_who.get(key)
+        try:
+            model = self.final_model or self.model
+            lang, prob, allp = model.detect_language(audio)
+            allp = sorted(allp, key=lambda x: -x[1])
+            expected = [l.lower() for l in (self.cfg.get("expected_languages") or [])]
+            if expected:
+                cands = [(l, p) for l, p in allp if l in expected]
+                if cands:
+                    lang, prob = cands[0]
+            if prob < 0.5 and prev:
+                lang = prev
+        except Exception:
+            logging.exception("detección de idioma")
+            return prev
+        self.lang_by_who[key] = lang
+        return lang
+
+    def _partial_lang(self, who):
+        """Para el texto en vivo: el idioma de esa persona si ya se conoce;
+        si no, None (Whisper lo detecta solo)."""
+        return self._fixed_lang() or self.lang_by_who.get(tuple(who or []))
+
+    def _transcribe(self, audio, final, words=None, lang=None):
         """Devuelve (texto, palabras) — palabras = [(palabra, seguridad, inicio, fin)].
         Las finales siempre traen palabras; las parciales solo si words=True."""
         model = (self.final_model or self.model) if final else self.model
         want_words = final if words is None else words
-        segs, _ = model.transcribe(
+        lang = lang or self._fixed_lang()
+        segs, info = model.transcribe(
             audio,
-            language=self.cfg["source_lang"],
+            language=lang,
             beam_size=5 if final else 1,
             vad_filter=final,
             condition_on_previous_text=False,
-            initial_prompt=self.context[-200:] or None,
+            initial_prompt=self.context.get(lang or "", "")[-200:] or None,
             hotwords=self._hotwords(),
             word_timestamps=want_words,
             without_timestamps=not want_words,
@@ -362,6 +411,7 @@ class Engine(threading.Thread):
             # solo funciona con tiempos por palabra
             hallucination_silence_threshold=1.0 if want_words else None,
         )
+        self.last_lang = lang or getattr(info, "language", None)
         parts, words = [], []
         for s in segs:
             if s.no_speech_prob > 0.6 and s.avg_logprob < -0.8:
@@ -429,9 +479,11 @@ class Engine(threading.Thread):
         who = self._who(times)
         t0 = time.time()
         self.last_removed = False
-        text, words = self._transcribe(audio, final=True)
+        lang = self._pick_lang(audio, who)
+        text, words = self._transcribe(audio, final=True, lang=lang)
+        lang = lang or self.last_lang
         removed = self.last_removed
-        logging.info("final %.1fs audio en %.2fs", len(audio) / SR, time.time() - t0)
+        logging.info("final %.1fs audio en %.2fs [%s]", len(audio) / SR, time.time() - t0, lang)
         self.ui_q.put(("partial", None, None))
         if not text:
             if removed:                       # Whisper inventó algo: "inaudible"
@@ -447,12 +499,12 @@ class Engine(threading.Thread):
                 self._emit_inaudible(who, audio)
                 return
             self.recent_finals = (self.recent_finals + [norm])[-4:]
-        self.context = (self.context + " " + text)[-400:]
+        self.context[lang or ""] = (self.context.get(lang or "", "") + " " + text)[-400:]
 
         # quién dijo cada palabra (Discord): si hablaron varios, una línea por persona
         runs = self.speakers.attribute(times[0], words) if (self.speakers and words) else None
         if not runs:
-            self._emit_entry(text, who, words, audio, tail=removed)
+            self._emit_entry(text, who, words, audio, tail=removed, lang=lang)
             return
         logging.info("frase repartida en %d tramo(s)", len(runs))
         for k, (names, i0, i1) in enumerate(runs):
@@ -463,14 +515,14 @@ class Engine(threading.Thread):
             a0 = max(0, int((ws[0][2] - 0.15) * SR))
             a1 = min(len(audio), int((ws[-1][3] + 0.25) * SR))
             self._emit_entry(run_text, names, ws, audio[a0:a1] if len(runs) > 1 else audio,
-                             tail=removed and k == len(runs) - 1)
+                             tail=removed and k == len(runs) - 1, lang=lang)
 
-    def _emit_entry(self, text, who, words, audio, tail=False):
+    def _emit_entry(self, text, who, words, audio, tail=False, lang=None):
         """tail=True: a la frase se le quitó un pedazo inventado → "(inaudible)" al final."""
         self.next_id += 1
         self.ui_q.put(("final", self.next_id, text, datetime.datetime.now(), who,
-                       [(w[0], w[1]) for w in words], audio, {"tail": tail}))
-        self.translator.add_final(self.next_id, text, who)
+                       [(w[0], w[1]) for w in words], audio, {"tail": tail, "lang": lang}))
+        self.translator.add_final(self.next_id, text, who, lang)
 
     def _emit_inaudible(self, who, audio):
         """Alguien dijo algo que no se entendió (Whisper solo inventó texto encima).
@@ -584,7 +636,9 @@ class Engine(threading.Thread):
                 last_partial = time.time()
                 dur = len(seg) * FRAME / SR
                 try:
-                    text, pw = self._transcribe(np.concatenate(seg), final=False, words=True)
+                    pwho = self._who(seg_t)
+                    text, pw = self._transcribe(np.concatenate(seg), final=False, words=True,
+                                                lang=self._partial_lang(pwho))
                 except Exception:
                     logging.exception("parcial falló")
                     text, pw = "", []
@@ -600,7 +654,7 @@ class Engine(threading.Thread):
                     continue
                 if text:
                     self.ui_q.put(("partial", text, self._who(seg_t)))
-                    self.translator.set_partial(text)
+                    self.translator.set_partial(text, self.last_lang)
 
 
 # =============================================================================
@@ -617,33 +671,42 @@ class Translator(threading.Thread):
         self.event = threading.Event()
         self.cache = {}
 
-    def add_final(self, id_, text, who=None):
-        self.finals.put((id_, text, who))
+    def add_final(self, id_, text, who=None, lang=None):
+        self.finals.put((id_, text, who, lang))
         self.event.set()
 
-    def _translate_final(self, id_, text, who):
+    def _translate(self, text, lang):
+        """Si ya está en el idioma del usuario, se deja tal cual."""
+        if same_lang(lang, self.cfg["target_lang"]):
+            return text
+        return self._tr(text, lang)
+
+    def _translate_final(self, id_, text, who, lang=None):
         try:
-            es = self._tr(text)
+            es = self._translate(text, lang)
         except Exception as e:
             logging.exception("Google falló")
             es = f"(no se pudo traducir: {e.__class__.__name__})"
         self.ui_q.put(("translation", id_, es, True))
 
-    def set_partial(self, text):
+    def set_partial(self, text, lang=None):
         with self.lock:
-            self.partial = text
+            self.partial = (text, lang)
         self.event.set()
 
-    def _tr(self, text):
-        if text in self.cache:
-            return self.cache[text]
+    def _tr(self, text, lang=None):
+        src = lang or self.cfg.get("source_lang") or "auto"
+        src = GOOGLE_LANG.get(src, src)
+        key = (text, src)
+        if key in self.cache:
+            return self.cache[key]
         import requests
         last = None
         for attempt in range(3):
             try:
                 r = requests.get(
                     "https://translate.googleapis.com/translate_a/single",
-                    params={"client": "gtx", "sl": self.cfg["source_lang"],
+                    params={"client": "gtx", "sl": src,
                             "tl": self.cfg["target_lang"], "dt": "t", "q": text},
                     timeout=5)
                 r.raise_for_status()
@@ -654,7 +717,7 @@ class Translator(threading.Thread):
                 time.sleep(0.4 * (attempt + 1))
         else:
             raise last
-        self.cache[text] = out
+        self.cache[key] = out
         if len(self.cache) > 500:
             self.cache.pop(next(iter(self.cache)))
         return out
@@ -665,15 +728,15 @@ class Translator(threading.Thread):
             self.event.clear()
             while True:
                 try:
-                    id_, text, who = self.finals.get_nowait()
+                    id_, text, who, lang = self.finals.get_nowait()
                 except queue.Empty:
                     break
-                self._translate_final(id_, text, who)
+                self._translate_final(id_, text, who, lang)
             with self.lock:
                 p, self.partial = self.partial, None
             if p:
                 try:
-                    self.ui_q.put(("partial_es", p, self._tr(p)))
+                    self.ui_q.put(("partial_es", p[0], self._translate(p[0], p[1])))
                 except Exception:
                     pass
 
@@ -891,6 +954,10 @@ class Overlay:
         t.tag_configure("pending", font=("Segoe UI", fs, "italic"), foreground="#56606e",
                                 spacing3=12)
         t.tag_configure("hint", font=("Segoe UI", max(9, fs - 3)), foreground=DIM)
+        t.tag_configure("lang", font=("Consolas", max(7, fs - 7), "bold"),
+                        foreground="#0b1220", background="#8b95a5")
+        t.tag_configure("lang_mine", font=("Consolas", max(7, fs - 7), "bold"),
+                        foreground="#0b1220", background="#7ee787")
         t.tag_configure("inaudible", font=("Segoe UI", fs, "italic"), foreground="#6f7d90",
                         spacing3=12)
         t.tag_configure("inaudible_tail", font=("Segoe UI", max(9, fs - 3), "italic"),
@@ -958,10 +1025,15 @@ class Overlay:
         words = e.get("words") or []
         flags = self._doubt_flags(words)
         inaudible = e.get("flags", {}).get("inaudible")
-        en_line = (show_en or any(flags)) and not inaudible
+        lang = e.get("flags", {}).get("lang")
+        mine = same_lang(lang, self.cfg["target_lang"])   # ya está en tu idioma
+        en_line = (show_en or any(flags)) and not inaudible and not mine
         if e.get("who") is not None:
             self._insert_who(t, e["who"])
         t.insert("end", e["t"].strftime("%H:%M:%S") + "  ", "time")
+        if lang and not inaudible:
+            t.insert("end", f" {lang.upper()} ", "lang_mine" if mine else "lang")
+            t.insert("end", "  ")
         if e["id"] in self.audio:
             tp, ts = f"play_{e['id']}", f"slow_{e['id']}"
             t.insert("end", "▶", ("btn", tp))
