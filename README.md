@@ -96,8 +96,10 @@ Tienes que usar la **app de escritorio de Discord**, no la versión web. **No co
 | `source_lang` / `target_lang` | Idioma que se escucha / idioma al que se traduce (códigos: `en`, `es`, `pt`, `fr`, `de`…) | `en` → `es` |
 | `model` / `final_model` | Modelo de Whisper. `auto` lo elige según tu PC | `auto` |
 | `glossary` | Palabras que Whisper debe reconocer bien: nombres, juegos, herramientas | `[]` |
-| `silence_end` | Segundos de silencio que cierran una frase | `0.9` |
-| `max_segment` | Duración máxima de una frase antes de mandarla a traducir | `8` |
+| `silence_end` | Segundos de silencio que cierran una frase | `0.6` |
+| `max_segment` | Duración máxima de una frase antes de mandarla a traducir | `5` |
+| `commit_on_comma` | Mandar a traducir también al llegar a una coma (si van 4 palabras o más), aunque la persona siga hablando. Más rápido, aunque con un poco menos de contexto | `true` |
+| `commit_min_seconds` | Pedazo mínimo que se manda a traducir antes de que termine de hablar | `1.5` |
 | `doubt_threshold` | Por debajo de esta seguridad, una palabra sale en naranja (de 0 a 1) | `0.35` |
 | `bubble_side` | Lado de la pantalla de las burbujas: `right` o `left` | `right` |
 | `bubble_top` | Altura donde empiezan las burbujas (0 = arriba, 1 = abajo) | `0.15` |

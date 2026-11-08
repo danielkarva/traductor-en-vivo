@@ -66,10 +66,15 @@ DEFAULT_CONFIG = {
     "doubt_threshold_first": 0.12,   # la 1.ª palabra de cada frase siempre sale baja en Whisper
     "source_lang": "en",
     "target_lang": "es",
-    "silence_end": 0.9,      # segundos de silencio que cierran una frase
+    "silence_end": 0.6,      # segundos de silencio que cierran una frase
+    # mandar a traducir antes de que la persona termine de hablar:
+    "commit_min_seconds": 1.5,  # pedazo mínimo
+    "commit_on_comma": True,    # cortar también en comas (con 4+ palabras)
+    "commit_gap_after": 3.0,    # sin puntuación: cortar en la pausa más larga desde aquí
+    "partial_every": 0.6,       # cada cuánto se actualiza el texto en vivo (GPU)
     # palabras que Whisper debe reconocer y la traducción debe respetar
     "glossary": [],
-    "max_segment": 8.0,      # una frase nunca pasa de esto
+    "max_segment": 5.0,      # una frase nunca pasa de esto
     "min_threshold": 0.004,  # volumen mínimo para considerar que alguien habla
     # burbujas (ventana minimizada)
     "bubble_side": "right",  # "right" o "left"
@@ -227,7 +232,7 @@ class Engine(threading.Thread):
         self.paused = False
         self.model = None
         self.final_model = None
-        self.partial_every = 0.9
+        self.partial_every = float(cfg.get("partial_every", 0.6))
         self.recent_finals = []
         self.next_id = 0
         self.context = ""
@@ -302,6 +307,35 @@ class Engine(threading.Thread):
         if text.lower().strip(" .!?") in {h.strip(" .!?") for h in HALLUCINATIONS}:
             return "", []
         return text, words
+
+    def _early_cut(self, pw, dur):
+        """¿Dónde cortar lo que se lleva dicho para mandarlo a traducir YA, aunque la
+        persona siga hablando? Devuelve el segundo del corte o None.
+        pw = palabras del parcial [(palabra, seguridad, inicio, fin)], dur = segundos."""
+        min_s = float(self.cfg.get("commit_min_seconds", 1.5))
+        if dur < min_s or len(pw) < 3:
+            return None
+        cut = None
+        for k, (w, _, ws, we) in enumerate(pw[:-1]):
+            if not (min_s * 0.6 <= we <= dur - 0.4):
+                continue
+            end = w.strip()
+            if end.endswith((".", "?", "!")) and k >= 1:
+                cut = we                                  # fin de oración
+            elif (self.cfg.get("commit_on_comma", True) and end.endswith((",", ";", ":"))
+                  and k >= 3):
+                cut = we                                  # coma, con 4+ palabras antes
+        if cut:
+            return cut
+        # habla de corrido sin puntuación: cortar en la pausa más larga entre palabras
+        if dur >= float(self.cfg.get("commit_gap_after", 3.0)):
+            best, best_gap = None, 0.18
+            for a, b in zip(pw[:-1], pw[1:]):
+                gap = b[2] - a[3]
+                if gap > best_gap and min_s <= a[3] <= dur - 0.4:
+                    best, best_gap = a[3], gap
+            return best
+        return None
 
     def _who(self, times):
         if not self.speakers or not times:
@@ -452,14 +486,7 @@ class Engine(threading.Thread):
                 except Exception:
                     logging.exception("parcial falló")
                     text, pw = "", []
-                # Si ya terminó una oración y la persona sigue hablando, se manda esa
-                # oración a traducir ya (no hay que esperar a que haga una pausa).
-                cut_s = None
-                if dur >= 2.5 and len(pw) >= 3:
-                    for k, (w, _, ws, we) in enumerate(pw[:-1]):
-                        if (w.strip().endswith((".", "?", "!")) and k >= 1
-                                and 1.0 <= we <= dur - 0.4):
-                            cut_s = we
+                cut_s = self._early_cut(pw, dur)
                 if cut_s:
                     cut = min(len(seg), int((cut_s + 0.12) * SR / FRAME))
                     logging.info("oración enviada a los %.1fs (sigue hablando)", cut_s)
