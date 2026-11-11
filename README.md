@@ -109,6 +109,7 @@ Tienes que usar la **app de escritorio de Discord**, no la versión web. **No co
 | `commit_on_comma` | Mandar a traducir también al llegar a una coma (si van 4 palabras o más), aunque la persona siga hablando. Más rápido, aunque con un poco menos de contexto | `true` |
 | `commit_min_seconds` | Pedazo mínimo que se manda a traducir antes de que termine de hablar | `1.5` |
 | `doubt_threshold` | Por debajo de esta seguridad, una palabra sale en naranja (de 0 a 1) | `0.35` |
+| `audio_device` | Qué salida de audio escuchar. Vacío = la misma que usa Discord para la llamada, o la predeterminada de Windows si Discord está en "Predeterminado". Para fijar una, pon parte de su nombre, por ejemplo `"Headphones"` | `""` |
 | `show_inaudible` | Mostrar *(inaudible)* cuando alguien dijo algo que no se entendió. Los ruidos cortos y el sonido cuando nadie habla en Discord se ignoran siempre | `true` |
 | `inaudible_min_seconds` | Sonidos más cortos que esto (tos, teclado, clics) no muestran *(inaudible)* | `1.2` |
 | `bubble_side` | Lado de la pantalla de las burbujas: `right` o `left` | `right` |
@@ -142,7 +143,7 @@ Tu antivirus (Avast, AVG, Kaspersky, ESET…) intercepta las conexiones seguras.
 <details>
 <summary><b>No traduce nada / la ventana dice "Escuchando" pero no aparece texto</b></summary>
 
-- El traductor escucha **la salida de audio predeterminada de Windows**. Si Discord suena por otros audífonos, cambia la salida predeterminada o el dispositivo de salida en Discord, y luego toca **🔊**.
+- El traductor escucha **la misma salida de audio que usa Discord** (o la predeterminada de Windows). Si la que escucha se queda en silencio, revisa sola a los pocos segundos. Si aun así no traduce, mira en la barra de abajo de la ventana qué salida está escuchando, y fija la correcta en `config.json` con `"audio_device"`.
 - Revisa `traductor.log`, en la carpeta del traductor: ahí quedan los errores.
 </details>
 

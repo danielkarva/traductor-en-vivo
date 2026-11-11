@@ -42,6 +42,8 @@ class DiscordSpeakers(threading.Thread):
         self.active = {}
         self.channel_id = None
         self.channel_name = None
+        # salida de audio que usa Discord (None = la predeterminada de Windows)
+        self.output_device = None
         self.need_refresh = False
         self.connected = False
         # desfase medido en la llamada real (se guarda en config al cerrar)
@@ -173,6 +175,20 @@ class DiscordSpeakers(threading.Thread):
         else:
             self._status("Discord: no estás en un canal de voz")
 
+    def _set_output(self, data):
+        """De la configuración de voz de Discord saca el NOMBRE de la salida de audio."""
+        out = (data or {}).get("output") or {}
+        dev_id = out.get("device_id")
+        name = None
+        for d in out.get("available_devices") or []:
+            if d.get("id") == dev_id:
+                name = d.get("name")
+        if not dev_id or str(dev_id).lower() == "default" or (name or "").lower() in ("default", "predeterminado", ""):
+            name = None
+        if name != self.output_device:
+            logging.info("Discord suena por: %s", name or "la salida predeterminada de Windows")
+        self.output_device = name
+
     def _handle(self, d):
         if d.get("cmd") != "DISPATCH":
             return
@@ -196,6 +212,8 @@ class DiscordSpeakers(threading.Thread):
                     iv[2] = now
         elif ev in ("VOICE_STATE_CREATE", "VOICE_STATE_UPDATE"):
             self._remember(data)
+        elif ev == "VOICE_SETTINGS_UPDATE":
+            self._set_output(data)
         elif ev == "VOICE_CHANNEL_SELECT":
             self.need_refresh = True
 
@@ -215,6 +233,11 @@ class DiscordSpeakers(threading.Thread):
                 self.self_id = ((ready.get("data") or {}).get("user") or {}).get("id")
                 self._auth()
                 self._cmd("SUBSCRIBE", {}, evt="VOICE_CHANNEL_SELECT")
+                try:
+                    self._set_output(self._cmd("GET_VOICE_SETTINGS"))
+                    self._cmd("SUBSCRIBE", {}, evt="VOICE_SETTINGS_UPDATE")
+                except Exception:
+                    logging.exception("no pude leer la salida de audio de Discord")
                 self.connected = True
                 self._refresh_channel()
                 while True:

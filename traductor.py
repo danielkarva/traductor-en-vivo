@@ -66,6 +66,9 @@ DEFAULT_CONFIG = {
     "doubt_threshold": 0.35,         # palabras con menos seguridad que esto salen en naranja
     "doubt_threshold_first": 0.12,   # la 1.ª palabra de cada frase siempre sale baja en Whisper
     # "(inaudible)": se muestra cuando alguien dijo algo que Whisper no entendió
+    # salida de audio a escuchar: "" = la que use Discord (o la de Windows);
+    # o parte del nombre, p. ej. "Headphones"
+    "audio_device": "",
     "show_inaudible": True,
     "inaudible_min_seconds": 1.2,   # sonidos más cortos (tos, teclado) se ignoran
     # "auto" = detecta el idioma de cada frase (y recuerda el de cada persona)
@@ -230,26 +233,54 @@ def save_config(cfg):
 # Captura del audio que sale por los parlantes / audífonos (WASAPI loopback)
 # =============================================================================
 class AudioCapture(threading.Thread):
-    def __init__(self, out_q, ui_q):
+    """Escucha una salida de audio. Cuál: la que pongas en config ("audio_device"),
+    si no la que usa Discord para la llamada, y si no la predeterminada de Windows.
+    Si la salida elegida pasa unos segundos sin sonar nada (señal de que el audio
+    va por otro lado: Windows cambió la predeterminada, cambiaste de audífonos…),
+    vuelve a revisar y se cambia sola."""
+    SILENT_RECHECK = 6.0
+
+    def __init__(self, out_q, ui_q, cfg=None, speakers=None):
         super().__init__(daemon=True)
         self.out_q = out_q
         self.ui_q = ui_q
+        self.cfg = cfg or {}
+        self.speakers = speakers
         self.stop_flag = False
         self.restart_flag = False
+        self.current = None
+        self.last_chunk = 0.0
 
     def request_restart(self):
         self.restart_flag = True
 
-    @staticmethod
-    def _find_loopback(p):
+    def _wanted_name(self, p):
+        manual = (self.cfg.get("audio_device") or "").strip()
+        if manual:
+            return manual, "config"
+        disc = getattr(self.speakers, "output_device", None) if self.speakers else None
+        if disc:
+            return disc, "Discord"
         wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-        default = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
-        if default.get("isLoopbackDevice"):
-            return default
-        for lb in p.get_loopback_device_info_generator():
-            if default["name"] in lb["name"]:
-                return lb
-        raise RuntimeError("No encontré el loopback de " + default["name"])
+        return p.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"], "Windows"
+
+    def _find_loopback(self, p):
+        want, why = self._wanted_name(p)
+        lbs = list(p.get_loopback_device_info_generator())
+        w = want.lower()
+        for lb in lbs:
+            n = lb["name"].replace(" [Loopback]", "").lower()
+            if w == n or w in n or n in w:
+                return lb, why
+        if why != "Windows":                     # no está: la predeterminada
+            logging.warning("no encontré la salida '%s' (%s); uso la de Windows", want, why)
+            self.cfg = dict(self.cfg, audio_device="")
+            wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            d = p.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"].lower()
+            for lb in lbs:
+                if d in lb["name"].lower():
+                    return lb, "Windows"
+        raise RuntimeError("No encontré la salida de audio " + want)
 
     def run(self):
         while not self.stop_flag:
@@ -257,7 +288,7 @@ class AudioCapture(threading.Thread):
             p = pyaudio.PyAudio()
             stream = None
             try:
-                dev = self._find_loopback(p)
+                dev, why = self._find_loopback(p)
                 ch = max(1, int(dev["maxInputChannels"]))
                 rate = int(dev["defaultSampleRate"])
                 # convertidor de calidad (soxr) y continuo: sin saltos entre pedazos
@@ -266,6 +297,7 @@ class AudioCapture(threading.Thread):
                 rs = soxr.ResampleStream(rate, SR, 1, dtype="float32", quality="HQ")
 
                 def cb(data, frames, info, status):
+                    self.last_chunk = time.time()
                     a = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
                     a = a.reshape(-1, ch).mean(axis=1)
                     out = rs.resample_chunk(a)
@@ -279,9 +311,21 @@ class AudioCapture(threading.Thread):
                                 stream_callback=cb)
                 name = dev["name"].replace(" [Loopback]", "")
                 self.ui_q.put(("device", name))
-                logging.info("Capturando: %s (%d Hz, %d canales)", name, rate, ch)
+                if name != self.current:
+                    logging.info("Capturando: %s (%d Hz, %d canales) — elegida por %s",
+                                 name, rate, ch, why)
+                self.current = name
+                started = time.time()
+                disc_dev = getattr(self.speakers, "output_device", None)
                 while not self.stop_flag and not self.restart_flag and stream.is_active():
                     time.sleep(0.2)
+                    now = time.time()
+                    # Discord cambió de salida → cambiar ya
+                    if getattr(self.speakers, "output_device", None) != disc_dev:
+                        break
+                    # nada suena por aquí hace rato → revisar si el audio va por otro lado
+                    if now - max(self.last_chunk, started) > self.SILENT_RECHECK:
+                        break
             except Exception as e:
                 logging.exception("error de audio")
                 self.ui_q.put(("status", f"Error de audio: {e}. Reintentando…"))
@@ -816,7 +860,8 @@ class Overlay:
         self.speakers = DiscordSpeakers(self.ui_q, cfg)
         self.engine = Engine(self.audio_q, self.ui_q, self.translator, cfg,
                              self.speakers if self.speakers.configured else None)
-        self.capture = AudioCapture(self.audio_q, self.ui_q)
+        self.capture = AudioCapture(self.audio_q, self.ui_q, cfg,
+                                    self.speakers if self.speakers.configured else None)
         self.speakers.start()
         self.translator.start()
         self.engine.start()
@@ -1145,6 +1190,8 @@ class Overlay:
             self.next_show += 1
 
     def _poll(self):
+        if getattr(self, "closing", False):      # ya se cerró la ventana
+            return
         changed = False
         live = False
         try:
@@ -1431,6 +1478,7 @@ class Overlay:
         self.capture.request_restart()
 
     def close(self):
+        self.closing = True
         if not self.mini:
             self.cfg["geometry"] = self.root.geometry()
         save_config(self.cfg)
