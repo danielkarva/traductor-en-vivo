@@ -620,6 +620,7 @@ class Engine(threading.Thread):
         silence = 0.0
         noise = min_th
         last_partial = 0.0
+        partial_wait = self.partial_every
 
         while True:
             try:
@@ -690,10 +691,14 @@ class Engine(threading.Thread):
                         if not seg:
                             speaking, voiced_run = False, 0
 
-            if (speaking and time.time() - last_partial > self.partial_every
+            # Si hay audio esperando en la cola, primero me pongo al día: si la GPU
+            # está ocupada (After Effects, un juego…) cada parcial tarda segundos y,
+            # hecho tras cada pedacito de 50 ms, el atraso crecía sin fin.
+            if (speaking and time.time() - last_partial > partial_wait
+                    and self.audio_q.qsize() <= 2
                     and len(seg) * FRAME / SR > 1.0):
-                last_partial = time.time()
                 dur = len(seg) * FRAME / SR
+                t0 = time.time()
                 try:
                     pwho = self._who(seg_t)
                     text, pw = self._transcribe(np.concatenate(seg), final=False, words=True,
@@ -701,6 +706,12 @@ class Engine(threading.Thread):
                 except Exception:
                     logging.exception("parcial falló")
                     text, pw = "", []
+                took = time.time() - t0
+                last_partial = time.time()
+                # el próximo parcial espera al menos lo que tardó este
+                partial_wait = max(self.partial_every, took)
+                if took > 1.5:
+                    logging.warning("parcial lento: %.1fs (¿GPU ocupada por otro programa?)", took)
                 cut_s = self._early_cut(pw, dur)
                 if cut_s:
                     cut = min(len(seg), int((cut_s + 0.12) * SR / FRAME))
